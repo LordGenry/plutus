@@ -41,6 +41,7 @@ library
     Language.PlutusTx.Coordination.Contracts.Future
     Language.PlutusTx.Coordination.Contracts.Vesting
     Language.PlutusTx.Coordination.Contracts.Swap
+    Language.PlutusTx.Coordination.StateMachine.TH
     Language.PlutusTx.Validation
   other-modules:
     Language.PlutusTx.Validation.TH

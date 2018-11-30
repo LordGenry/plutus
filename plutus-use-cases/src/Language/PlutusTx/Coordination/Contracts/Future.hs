@@ -32,8 +32,8 @@ import qualified Language.PlutusTx            as PlutusTx
 import qualified Language.PlutusTx.Validation as PlutusTx
 import           Ledger                       (DataScript (..), PubKey, TxOutRef', Value (..), ValidatorScript (..), scriptTxIn, scriptTxOut)
 import qualified Ledger                       as Ledger
-import           Ledger.Validation            (Height (..), OracleValue (..), PendingTx (..), PendingTxOut (..),
-                                              PendingTxOutType (..), Signed (..), ValidatorHash)
+import           Ledger.Validation            (Height (..), OracleValue (..), PendingTx (..), PendingTx', PendingTxOut (..),
+                                              PendingTxOutType (..), Signed (..))
 import           Wallet                       (WalletAPI (..), WalletAPIError, otherError, pubKey, signAndSubmit)
 
 import           Prelude                      hiding ((&&), (||))
@@ -194,10 +194,10 @@ validatorScript :: Future -> ValidatorScript
 validatorScript ft = ValidatorScript val where
     val = Ledger.applyScript inner (Ledger.lifted ft)
     inner = Ledger.fromPlcCode $$(PlutusTx.plutus [||
-        \Future{..} (r :: FutureRedeemer) FutureData{..} (p :: (PendingTx ValidatorHash)) ->
+        \Future{..} (r :: FutureRedeemer) FutureData{..} (p :: PendingTx') ->
 
             let
-                PendingTx _ outs _ _ (Height height) _ ownHash = p
+                PendingTx _ outs _ _ (Height height) _ (ownHash, _, _) = p
 
                 eqPk :: PubKey -> PubKey -> Bool
                 eqPk = $$(PlutusTx.eqPubKey)

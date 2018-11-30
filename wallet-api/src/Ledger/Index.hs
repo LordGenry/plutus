@@ -168,9 +168,12 @@ checkMatch v = \case
         | a /= Ledger.scriptAddress vl ->
                 throwError $ InvalidScriptHash d
         | otherwise ->
-            let v' = ValidationData
+            let hashes = (Validation.plcValidatorDigest (Ledger.getAddress a),
+                          Validation.plcDataScriptHash d,
+                          Validation.plcRedeemerHash r)
+                v' = ValidationData
                     $ lifted
-                    $ v { pendingTxOwnHash = Validation.plcValidatorDigest (Ledger.getAddress a) }
+                    $ v { pendingTxOwnHash = hashes }
                 (logOut, success) = Ledger.runScript v' vl r d
             in
                 if success

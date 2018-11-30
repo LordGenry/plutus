@@ -156,6 +156,8 @@ data Height = Height { getHeight :: Int }
 
 instance ToJSON Height
 instance FromJSON Height
+-- | Pending transaction information available to on-chain code
+type PendingTx' = PendingTx (ValidatorHash, DataScriptHash, RedeemerHash)
 
 makeLift ''PendingTxOutType
 makeLift ''PendingTxOut

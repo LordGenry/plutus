@@ -24,9 +24,9 @@ import           Ledger.Validation
 import           Prelude                    (Bool (..), Eq (..), Maybe (..))
 
 -- | Check if a transaction was signed by a public key
-txSignedBy :: Q (TExp (PendingTx ValidatorHash -> PubKey -> Bool))
+txSignedBy :: Q (TExp (PendingTx' -> PubKey -> Bool))
 txSignedBy = [||
-    \(p :: PendingTx ValidatorHash) (PubKey k) ->
+    \(p :: PendingTx') (PubKey k) ->
         let
             PendingTx _ _ _ _ _ sigs _ = p
 

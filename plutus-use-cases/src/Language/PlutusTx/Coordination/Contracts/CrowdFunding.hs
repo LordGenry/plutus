@@ -37,7 +37,7 @@ import qualified Language.PlutusTx            as PlutusTx
 import qualified Language.PlutusTx.Validation as PlutusTx
 import           Ledger                       (DataScript (..), PubKey (..), TxId', ValidatorScript (..), Value (..), scriptTxIn)
 import qualified Ledger                       as Ledger
-import           Ledger.Validation            (Height (..), PendingTx (..), PendingTxIn (..), PendingTxOut, ValidatorHash)
+import           Ledger.Validation            (Height (..), PendingTx (..), PendingTxIn (..), PendingTxOut, PendingTx')
 import           Wallet                       (EventHandler (..), EventTrigger, Range (..), WalletAPI (..),
                                                WalletDiagnostics (..), andT, blockHeightT, fundsAtAddressT, otherError,
                                                ownPubKeyTxOut, payToScript, pubKey, signAndSubmit)
@@ -122,7 +122,7 @@ contributionScript cmp  = ValidatorScript val where
 
     --   See note [Contracts and Validator Scripts] in
     --       Language.Plutus.Coordination.Contracts
-    inner = Ledger.fromPlcCode $$(PlutusTx.plutus [|| (\Campaign{..} (act :: CampaignAction) (a :: CampaignActor) (p :: PendingTx ValidatorHash) ->
+    inner = Ledger.fromPlcCode $$(PlutusTx.plutus [|| (\Campaign{..} (act :: CampaignAction) (a :: CampaignActor) (p :: PendingTx') ->
         let
 
             infixr 3 &&
@@ -131,7 +131,7 @@ contributionScript cmp  = ValidatorScript val where
 
             -- | Check that a pending transaction is signed by the private key
             --   of the given public key.
-            signedByT :: PendingTx ValidatorHash -> CampaignActor -> Bool
+            signedByT :: PendingTx' -> CampaignActor -> Bool
             signedByT = $$(PlutusTx.txSignedBy)
 
             PendingTx ps outs _ _ (Height h) _ _ = p
