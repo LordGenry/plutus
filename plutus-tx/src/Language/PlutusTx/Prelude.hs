@@ -17,6 +17,13 @@ module Language.PlutusTx.Prelude (
     -- * Numbers
     min,
     max,
+    -- * Rational numbers
+    Ratio(..),
+    timesR,
+    plusR,
+    minusR,
+    roundR,
+    fromIntR,
     -- * Maybe
     isJust,
     isNothing,
@@ -25,12 +32,14 @@ module Language.PlutusTx.Prelude (
     map,
     foldr,
     length,
-    all) where
+    all,
+    any) where
 
-import           Prelude                    (Bool (..), Int, Maybe (..), String, (<), (>), (+))
+import           Prelude                    (Bool (..), Int, Maybe (..), String, (<), (>), (+), (*), (-), (>=), div, rem)
 
 import qualified Language.PlutusTx.Builtins as Builtins
 import           Language.PlutusTx.Builtins (error)
+import           Language.PlutusTx.Lift     (makeLift)
 
 import           Language.Haskell.TH
 
@@ -76,6 +85,33 @@ min = [|| \(a :: Int) (b :: Int) -> if a < b then a else b ||]
 -- | The larger of two `Int`s
 max :: Q (TExp (Int -> Int -> Int))
 max = [|| \(a :: Int) (b :: Int) -> if a > b then a else b ||]
+
+
+data Ratio a = a :% a 
+
+makeLift ''Ratio
+
+timesR :: Q (TExp (Ratio Int -> Ratio Int -> Ratio Int))
+timesR = [|| \(x :% y) (x' :% y') -> (x*x') :% (y*y') ||]
+
+plusR :: Q (TExp (Ratio Int -> Ratio Int -> Ratio Int))
+plusR = [|| \(x :% y) (x' :% y') -> (x*y' + x'*y) :% (y*y') ||]
+
+minusR :: Q (TExp (Ratio Int -> Ratio Int -> Ratio Int))
+minusR = [|| \(x :% y) (x' :% y') -> (x*y' - x'*y) :% (y*y') ||]
+
+-- | Round a `Ratio Int` to the nearest integer. 0.5 is rounded
+--   towards positive infinity.
+roundR :: Q (TExp (Ratio Int -> Int))
+roundR = [|| \(x :% y) -> 
+    let i = x `div` y
+        rm = x `rem` y
+    in
+        if (2 * rm >= y) then i + 1 else i
+     ||]
+
+fromIntR :: Q (TExp (Int -> Ratio Int))
+fromIntR = [|| \i -> i :% 1 ||]
 
 isJust :: Q (TExp (Maybe a -> Bool))
 isJust = [|| \(m :: Maybe a) -> case m of { Just _ -> True; _ -> False; } ||]
@@ -128,3 +164,12 @@ all = [||
         in go l
     ||]
 
+any :: Q (TExp ((a -> Bool) -> [a] -> Bool))
+any = [||
+    \pred l ->
+        let or' a b = if a then True else b
+            go lst = case lst of
+                []   -> False
+                x:xs -> pred x `or'` go xs
+        in go l
+    ||]

@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric       #-}
 {-# LANGUAGE NoImplicitPrelude   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell     #-}
@@ -13,12 +14,17 @@ module Language.PlutusTx.Validation.TH(
     eqDataScript,
     eqRedeemer,
     eqValidator,
-    eqTx
+    eqTx,
+    eqHeight,
+    inputsOwnAddress, 
+    outputsOwnAddress,
+    -- * Oracle values
+    extractVerifyAt
     ) where
 
 import           Language.Haskell.TH        (Q, TExp)
 import qualified Language.PlutusTx.Builtins as Builtins
-import           Ledger
+import           Ledger                     hiding (Height)
 import           Ledger.Validation
 
 import           Prelude                    (Bool (..), Eq (..), Maybe (..))
@@ -92,3 +98,58 @@ eqRedeemer = [|| \(RedeemerHash l) (RedeemerHash r) -> Builtins.equalsByteString
 -- | Equality of transactions
 eqTx :: Q (TExp (TxHash -> TxHash -> Bool))
 eqTx = [|| \(TxHash l) (TxHash r) -> Builtins.equalsByteString l r ||]
+
+eqHeight :: Q (TExp (Height -> Height -> Bool))
+eqHeight = [|| \(Height h) (Height h') -> h' == h ||]
+
+-- | Get a value from a trusted oracle. Fails if there is a mismatch of actual
+--   and expected public key, or of actual and expected chain height.
+extractVerifyAt :: Q (TExp (OracleValue a -> PubKey -> Height -> a))
+extractVerifyAt = [|| \(OracleValue (Signed (actualPk, (actualHeight, r)))) expPk expHeight -> 
+    let 
+        Height h1 = expHeight
+        Height h2 = actualHeight
+        PubKey pk1 = expPk
+        PubKey pk2 = actualPk
+        and a b = if a then b else False
+    in if (h1 == h2) `and` (pk1 == pk2) then r else Builtins.error () ||]
+
+inputsOwnAddress :: Q (TExp (PendingTx' -> [PendingTxIn]))
+inputsOwnAddress = [|| \p ->
+    let
+        PendingTx ins _ _ _ _ _ (ValidatorHash h, _, _) = p
+
+        go []     = []
+        go (x:xs) = 
+            let PendingTxIn _ hs _ = x in
+                case hs of
+                    Nothing -> go xs
+                    Just (ValidatorHash h', _) ->
+                        if Builtins.equalsByteString h h'
+                        then x : go xs
+                        else go xs
+
+    in
+        go ins
+
+    ||]
+
+outputsOwnAddress :: Q (TExp (PendingTx' -> [PendingTxOut]))
+outputsOwnAddress = [|| \p ->
+    let
+        PendingTx _ outs _ _ _ _ (ValidatorHash h, _, _) = p
+
+        go []     = []
+        go (x:xs) = 
+            let PendingTxOut _ hs _ = x in
+                case hs of
+                    Nothing -> go xs
+                    Just (ValidatorHash h', _) ->
+                        if Builtins.equalsByteString h h'
+                        then x : go xs
+                        else go xs
+
+    in
+        go outs
+
+    ||]

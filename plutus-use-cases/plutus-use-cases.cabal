@@ -29,7 +29,8 @@ library
     plutus-tx -any,
     plutus-tx-plugin -any,
     wallet-api -any,
-    lens -any
+    lens -any,
+    bytestring -any
   default-language: Haskell2010
   default-extensions: ExplicitForAll ScopedTypeVariables
                       DeriveGeneric StandaloneDeriving DeriveLift
@@ -41,6 +42,7 @@ library
     Language.PlutusTx.Coordination.Contracts.Future
     Language.PlutusTx.Coordination.Contracts.Vesting
     Language.PlutusTx.Coordination.Contracts.Swap
+    Language.PlutusTx.Coordination.Contracts.Swap.TH
     Language.PlutusTx.Coordination.StateMachine.TH
     Language.PlutusTx.Validation
   other-modules:

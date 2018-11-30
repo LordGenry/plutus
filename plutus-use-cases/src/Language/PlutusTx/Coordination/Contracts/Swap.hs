@@ -1,180 +1,59 @@
 {-# LANGUAGE DataKinds         #-}
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE RecordWildCards   #-}
 {-# LANGUAGE TemplateHaskell   #-}
+{-# LANGUAGE DeriveGeneric     #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 {-# OPTIONS -fplugin=Language.PlutusTx.Plugin -fplugin-opt Language.PlutusTx.Plugin:dont-typecheck #-}
 module Language.PlutusTx.Coordination.Contracts.Swap(
-    Swap(..),
-    swapValidator
+    FxSwap(..),
+    validator,
+    enterFixed,
+    enterFloating
     ) where
 
-import qualified Language.PlutusTx            as PlutusTx
-import qualified Language.PlutusTx.Validation as PlutusTx
-import           Ledger                       (Height, PubKey, ValidatorScript (..), Value (..))
-import qualified Ledger                       as Ledger
-import           Ledger.Validation            (OracleValue (..), PendingTx (..), PendingTxIn (..), PendingTxOut (..),
-                                              ValidatorHash)
+import qualified Language.PlutusTx          as PlutusTx
+import           Language.PlutusTx.Prelude  (Ratio)
+import           Ledger                     (Validator (..), Value(..))
+import qualified Ledger                     as Ledger
+import           Wallet.API                 (WalletAPI(..))
+import           Ledger.Validation          (Height)
 
-import           Prelude                    (Bool (..), Eq (..), Int, Num (..), Ord (..))
+import           Language.PlutusTx.Coordination.Contracts.Swap.TH
+import           Language.PlutusTx.Coordination.StateMachine.TH
 
-data Ratio a = a :% a  deriving Eq
-
--- | A swap is an agreement to exchange cashflows at future dates. To keep
---  things simple, this is an interest rate swap (meaning that the cashflows are
---  interest payments on the same principal amount but with two different
---  interest rates, of which one is fixed and one is floating (varying with
---  time)) with only a single payment date.
---
---  At the beginning of the contract, the fixed rate is set to the expected
---  future value of the floating rate (so if the floating rate behaves as
---  expected, the two payments will be exactly equal).
---
-data Swap = Swap
-    { swapNotionalAmt     :: !Value
-    , swapObservationTime :: !Height
-    , swapFixedRate       :: !(Ratio Int) -- ^ Interest rate fixed at the beginning of the contract
-    , swapFloatingRate    :: !(Ratio Int) -- ^ Interest rate whose value will be observed (by an oracle) on the day of the payment
-    , swapMargin          :: !Value -- ^ Margin deposited at the beginning of the contract to protect against default (one party failing to pay)
-    , swapOracle          :: !PubKey -- ^ Public key of the oracle (see note [Oracles] in [[Language.Plutus.Runtime]])
+-- | Foreign exchange swap based on the conversion rate between two currencies
+data FxSwap = FxSwap {
+        fxSwapTargetRate :: Ratio Int, -- ^ The exchange rate we want to fix
+        fxSwapAmount     :: Value,     -- ^ Amount in the fixed currency
+        fxSwapPayments   :: [Height]   -- ^ When the payments should be made
     }
 
--- | Identities of the parties involved in the swap. This will be the data
---   script which allows us to change the identities during the lifetime of
---   the contract (ie. if one of the parties sells their part of the contract)
---
---   In the future we could also put the `swapMargin` value in here to implement
---   a variable margin.
-data SwapOwners = SwapOwners {
-    swapOwnersFixedLeg :: !PubKey,
-    swapOwnersFloating :: !PubKey
-    }
+-- | Enter into an fx swap assuming the "fixed" role
+enterFixed :: WalletAPI m => FxSwap -> SwapOwners -> m ()
+enterFixed = undefined
 
-type SwapOracle = OracleValue (Ratio Int)
+-- | Enter into an fx swap assuming the "floating" role
+enterFloating :: WalletAPI m => FxSwap -> SwapOwners -> m ()
+enterFloating = undefined
 
--- | Validator script for the two transactions that initialise the swap.
---   See note [Swap Transactions]
---   See note [Contracts and Validator Scripts] in
---       Language.Plutus.Coordination.Contracts
-swapValidator :: Swap -> ValidatorScript
-swapValidator _ = ValidatorScript result where
-    result = Ledger.fromPlcCode $$(PlutusTx.plutus [|| (\(redeemer :: SwapOracle) SwapOwners{..} (p :: PendingTx ValidatorHash) Swap{..} ->
-        let
-            infixr 3 &&
-            (&&) :: Bool -> Bool -> Bool
-            (&&) = $$(PlutusTx.and)
+validator :: SwapParams -> Validator
+validator swp = Validator val where
+    val = Ledger.applyScript inner (Ledger.lifted swp)
 
-            mn :: Int -> Int -> Int
-            mn = $$(PlutusTx.min)
-
-            mx :: Int -> Int -> Int
-            mx = $$(PlutusTx.max)
-
-            timesR :: Ratio Int -> Ratio Int -> Ratio Int
-            timesR (x :% y) (x' :% y') = (x*x') :% (y*y')
-
-            plusR :: Ratio Int -> Ratio Int -> Ratio Int
-            plusR (x :% y) (x' :% y') = (x*y' + x'*y) :% (y*y')
-
-            minusR :: Ratio Int -> Ratio Int -> Ratio Int
-            minusR (x :% y) (x' :% y') = (x*y' - x'*y) :% (y*y')
-
-            extractVerifyAt :: OracleValue (Ratio Int) -> PubKey -> Ratio Int -> Height -> Ratio Int
-            extractVerifyAt = PlutusTx.error ()
-
-            round :: Ratio Int -> Int
-            round = PlutusTx.error ()
-
-            -- | Convert an [[Int]] to a [[Ratio Int]]
-            fromInt :: Int -> Ratio Int
-            fromInt = PlutusTx.error ()
-
-            signedBy :: PendingTxIn -> PubKey -> Bool
-            signedBy = $$(PlutusTx.txInSignedBy)
-
-            infixr 3 ||
-            (||) :: Bool -> Bool -> Bool
-            (||) = $$(PlutusTx.or)
-
-            isPubKeyOutput :: PendingTxOut -> PubKey -> Bool
-            isPubKeyOutput o k = $$(PlutusTx.maybe) False ($$(PlutusTx.eqPubKey) k) ($$(PlutusTx.pubKeyOutput) o)
-
-            -- Verify the authenticity of the oracle value and compute
-            -- the payments.
-            rt = extractVerifyAt redeemer swapOracle swapFloatingRate swapObservationTime
-
-            rtDiff :: Ratio Int
-            rtDiff = rt `minusR` swapFixedRate
-
-            amt = let Value v = swapNotionalAmt in v
-            margin = let Value v = swapMargin in v
-
-            amt' :: Ratio Int
-            amt' = fromInt amt
-
-            delta :: Ratio Int
-            delta = amt' `timesR` rtDiff
-
-            fixedPayment :: Int
-            fixedPayment = round (amt' `plusR` delta)
-
-            floatPayment :: Int
-            floatPayment = round (amt' `plusR` delta)
-
-            -- Compute the payouts (initial margin +/- the sum of the two
-            -- payments), ensuring that it is at least 0 and does not exceed
-            -- the total amount of money at stake (2 * margin)
-            clamp :: Int -> Int
-            clamp x = mn 0 (mx (2 * margin) x)
-            fixedRemainder = clamp (margin - fixedPayment + floatPayment)
-            floatRemainder = clamp (margin - floatPayment + fixedPayment)
-
-            -- The transaction must have one input from each of the
-            -- participants.
-            -- NOTE: Partial match is OK because if it fails then the PLC script
-            --       terminates with `error` and the validation fails (which is
-            --       what we want when the number of inputs and outputs is /= 2)
-            PendingTx [t1, t2] [o1, o2] _ _ _ _ _ = p
-
-            -- Each participant must deposit the margin. But we don't know
-            -- which of the two participant's deposit we are currently
-            -- evaluating (this script runs on both). So we use the two
-            -- predicates iP1 and iP2 to cover both cases
-
-            -- True if the transaction input is the margin payment of the
-            -- fixed leg
-            iP1 :: PendingTxIn -> Bool
-            iP1 t@(PendingTxIn _ _ (Value v)) = signedBy t swapOwnersFixedLeg && v == margin
-
-            -- True if the transaction input is the margin payment of the
-            -- floating leg
-            iP2 :: PendingTxIn -> Bool
-            iP2 t@(PendingTxIn _ _ (Value v)) = signedBy t swapOwnersFloating && v == margin
-
-            inConditions = (iP1 t1  && iP2 t2) || (iP1 t2 && iP2 t1)
-
-            -- The transaction must have two outputs, one for each of the
-            -- participants, which equal the margin adjusted by the difference
-            -- between fixed and floating payment
-
-            -- True if the output is the payment of the fixed leg.
-            ol1 :: PendingTxOut -> Bool
-            ol1 o@(PendingTxOut (Value v) _ _) = isPubKeyOutput o swapOwnersFixedLeg && v <= fixedRemainder
-
-            -- True if the output is the payment of the floating leg.
-            ol2 :: PendingTxOut -> Bool
-            ol2 o@(PendingTxOut (Value v) _ _) = isPubKeyOutput o swapOwnersFloating && v <= floatRemainder
-
-            -- NOTE: I didn't include a check that the chain height is greater
-            -- than the observation time. This is because the chain height is
-            -- already part of the oracle value and we trust the oracle.
-
-            outConditions = (ol1 o1 && ol2 o2) || (ol1 o2 && ol2 o1)
-
-
-        in
-        if inConditions && outConditions then () else PlutusTx.error ()
-        ) ||])
+    --   See note [Contracts and Validator Scripts] in
+    --       Language.Plutus.Coordination.Contracts
+    inner = Ledger.fromPlcCode $$(PlutusTx.plutus ([|| 
+            \sp (dataScript :: (SwapState, SwapAction)) (redeemerScript :: (SwapState, SwapAction))  ptx ->
+                let m = $$(stateMachine (StateMachine {
+                                            step       = swapStep,
+                                            eqState    = swapStateEq,
+                                            finalState = swapStateFinished
+                                            })) sp
+                in 
+                    if m dataScript redeemerScript ptx
+                    then ()
+                    else $$(PlutusTx.traceH) "State machine invalid step" (PlutusTx.error ())
+            ||]))
 
 {- Note [Swap Transactions]
 
