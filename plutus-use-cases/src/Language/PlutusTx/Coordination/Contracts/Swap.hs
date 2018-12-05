@@ -5,36 +5,60 @@
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 {-# OPTIONS -fplugin=Language.PlutusTx.Plugin -fplugin-opt Language.PlutusTx.Plugin:dont-typecheck #-}
 module Language.PlutusTx.Coordination.Contracts.Swap(
-    FxSwap(..),
-    validator,
     enterFixed,
     enterFloating
     ) where
 
 import qualified Language.PlutusTx          as PlutusTx
 import           Language.PlutusTx.Prelude  (Ratio)
-import           Ledger                     (Validator (..), Value(..))
+import           Ledger                     (Validator (..), Value(..), PubKey)
 import qualified Ledger                     as Ledger
-import           Wallet.API                 (WalletAPI(..))
-import           Ledger.Validation          (Height)
+import           Wallet.API                 (WalletAPI(..), pubKey)
 
+import qualified Language.PlutusTx.Coordination.Contracts.Swap.TH0 as TH0
+import           Language.PlutusTx.Coordination.Contracts.Swap.TH0 (Role(..), Spread(..))
 import           Language.PlutusTx.Coordination.Contracts.Swap.TH
 import           Language.PlutusTx.Coordination.StateMachine.TH
 
--- | Foreign exchange swap based on the conversion rate between two currencies
-data FxSwap = FxSwap {
-        fxSwapTargetRate :: Ratio Int, -- ^ The exchange rate we want to fix
-        fxSwapAmount     :: Value,     -- ^ Amount in the fixed currency
-        fxSwapPayments   :: [Height]   -- ^ When the payments should be made
-    }
+initialDataScript :: 
+    (Monad m, WalletAPI m)
+    => SwapParams 
+    -> Role 
+    -> PubKey 
+    -> m (SwapState, SwapAction)
+initialDataScript SwapParams{..} role other = do
+    own <- pubKey <$> myKeyPair
+    let owners = case role of
+            Fixed -> SwapOwners own other
+            Floating -> SwapOwners other own
+        margins = SwapMarginAccounts swapMarginPenalty swapMarginPenalty
+    pure (Ongoing owners margins, NoAction)
 
 -- | Enter into an fx swap assuming the "fixed" role
-enterFixed :: WalletAPI m => FxSwap -> SwapOwners -> m ()
+enterFixed :: 
+    WalletAPI m
+    => SwapParams 
+    -> SwapOwners 
+    -> m ()
 enterFixed = undefined
 
 -- | Enter into an fx swap assuming the "floating" role
-enterFloating :: WalletAPI m => FxSwap -> SwapOwners -> m ()
-enterFloating = undefined
+enterFloating :: (Applicative m, WalletAPI m) => SwapParams -> SwapOwners -> m ()
+enterFloating SwapParams{..} _ = pure ()
+
+-- | The current minimum margin
+currentMargin :: Role -> SwapParams -> (Ratio Int) -> Value
+currentMargin r swp fll =
+    let s = Spread {
+                fixedRate = swapFixedRate swp,
+                floatingRate = fll,
+                amount = swapNotionalAmount swp,
+                penalty = swapMarginPenalty swp
+            }
+    in $$(TH0.margin) r s
+
+address :: SwapParams -> Ledger.Address'
+address = Ledger.scriptAddress . validator
 
 validator :: SwapParams -> Validator
 validator swp = Validator val where

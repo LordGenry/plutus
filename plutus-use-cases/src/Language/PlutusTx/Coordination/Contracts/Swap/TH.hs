@@ -18,51 +18,16 @@ import           Language.PlutusTx.Prelude                        (Ratio)
 import qualified Language.PlutusTx                                as PlutusTx 
 import qualified Language.PlutusTx.Validation                     as TH
 import           Language.Haskell.TH                              (Q, TExp)
-import           Ledger                                           (PubKey, Value(..))
-import           Ledger.Validation                                (PendingTx', Height(..), PendingTx(..), PendingTxIn(..), PendingTxOut(..), OracleValue)
-import qualified Ledger.Validation                                as TH
+import           Ledger                                           (Value(..))
+import           Ledger.Validation                                (PendingTx', Height(..), PendingTx(..), PendingTxOut(..))
+import           Prelude                                          hiding ((&&))
 
-data SwapOwners = SwapOwners {
-    swapOwnersFixedLeg :: PubKey,
-    swapOwnersFloating :: PubKey
-    }
-
-PlutusTx.makeLift ''SwapOwners
-
-data SwapMarginAccounts = SwapMarginAccounts {
-    marginAccFixed :: Value,
-    marginAccFloating :: Value
-    }
-
-PlutusTx.makeLift ''SwapMarginAccounts
-
-data SwapState = Ongoing SwapOwners SwapMarginAccounts | Settled
-
-PlutusTx.makeLift ''SwapState
-
-data SwapParams = SwapParams {
-    swapNotionalAmount   :: Value,
-    swapObservationTimes :: [Height],
-    swapFixedRate        :: Ratio Int,
-    swapMargin           :: Value,
-    swapOracle           :: PubKey
-    }
-
-PlutusTx.makeLift ''SwapParams
-
-data SwapAction = 
-    Exchange (OracleValue (Ratio Int))
-    | AdjustMarginFixedLeg
-    | AdjustMarginFloatingLeg
-    | ChangeOwnerFixedLeg PubKey
-    | ChangeOwnerFloatingLeg PubKey
-
-PlutusTx.makeLift ''SwapAction
+import           Language.PlutusTx.Coordination.Contracts.Swap.TH0 as TH0
 
 swapStep :: Q (TExp (SwapParams -> PendingTx' -> SwapState -> SwapAction -> SwapState))
 swapStep = [|| \swp p st action -> 
     let
-        SwapParams (Value amt) obsTimes fixedRate (Value margin) oraclePk = swp
+        SwapParams amt obsTimes fxr pnlty oraclePk = swp
 
         PendingTx _ _ _ _ currentHeight _ _ = p
 
@@ -74,7 +39,15 @@ swapStep = [|| \swp p st action ->
         (&&) :: Bool -> Bool -> Bool
         (&&) = $$(TH.and)
 
-        totalValIn = $$(TH.foldr) (\(PendingTxIn _ _ (Value v')) v -> v + v') 0 ($$(TH.inputsOwnAddress) p)
+        currentMargin :: Role -> Ratio Int -> Value
+        currentMargin rl flr = 
+            let s = Spread {
+                        fixedRate    = fxr,
+                        floatingRate = flr,
+                        amount       = amt,
+                        penalty      = pnlty
+                    }
+            in $$(TH0.margin) rl s
 
         totalValOut = $$(TH.foldr) (\(PendingTxOut (Value v') _ _) v -> v + v') 0 ($$(TH.outputsOwnAddress) p)
 
@@ -83,6 +56,12 @@ swapStep = [|| \swp p st action ->
 
         -- Whether a payment is scheduled for the current block
         canExchangeNow = $$(TH.any) ($$(TH.eqHeight) currentHeight) obsTimes
+
+        -- | Whether the transaction was signed by the current owner of the fixed leg of the contract
+        signedFixed = $$(TH.txSignedBy) p fx
+
+        -- | Whether the transaction was signed by the current owner of the floating leg of the contract
+        signedFloating = $$(TH.txSignedBy) p fl
 
     in
 
@@ -93,10 +72,10 @@ swapStep = [|| \swp p st action ->
                 
                 -- difference between the two rates
                 rtDiff :: Ratio Int
-                rtDiff = $$(TH.minusR) rt fixedRate
+                rtDiff = $$(TH.minusR) rt fxr
 
                 amt' :: Ratio Int
-                amt' = $$(TH.fromIntR) amt
+                amt' = let Value v' = amt in $$(TH.fromIntR) v'
 
                 -- amount of money that changes hands in this exchange.
                 delta :: Int
@@ -122,24 +101,26 @@ swapStep = [|| \swp p st action ->
                 else $$(PlutusTx.traceH) "Cannot exchange payments now" (PlutusTx.error ())
                 
 
-        AdjustMarginFixedLeg -> 
-            let 
-                deltaMargin = totalValOut - totalValIn
-                fixedMargin' = fixedMargin + deltaMargin
+        AdjustMarginFixedLeg ov -> 
+            let                     
+                rt = $$(TH.extractVerifyAt) ov oraclePk currentHeight
+                fixedMargin' = totalValOut - floatingMargin
+                Value minFixedMargin = currentMargin Fixed rt 
             in
-                if deltaMargin > 0 && totalValOut == fixedMargin' + floatingMargin
+                if fixedMargin' >= minFixedMargin
                 then Ongoing 
                         (SwapOwners fx fl) 
                         (SwapMarginAccounts (Value fixedMargin') (Value floatingMargin))
 
                 else $$(PlutusTx.traceH) "AdjustMarginFixedLeg invalid" (PlutusTx.error ())
 
-        AdjustMarginFloatingLeg -> 
+        AdjustMarginFloatingLeg ov -> 
             let 
-                deltaMargin = totalValOut - totalValIn
-                floatingMargin' = floatingMargin + deltaMargin
+                rt = $$(TH.extractVerifyAt) ov oraclePk currentHeight
+                floatingMargin' = totalValOut - fixedMargin
+                Value minFloatingMargin = currentMargin Floating rt 
             in
-                if deltaMargin > 0 && totalValOut == fixedMargin + floatingMargin'
+                if floatingMargin' >= minFloatingMargin
                 then Ongoing 
                         (SwapOwners fx fl) 
                         (SwapMarginAccounts (Value fixedMargin) (Value floatingMargin'))
@@ -151,30 +132,24 @@ swapStep = [|| \swp p st action ->
             -- swap, 
             -- 1. the txn needs to be signed by the current owner
             -- 2. the new owner should be reflected in the new state
-            let 
-                signedByOwner = $$(TH.txSignedBy) p fx
-            in
-                if signedByOwner && totalValOut == fixedMargin + floatingMargin
-                then Ongoing 
-                        (SwapOwners fx' fl) 
-                        (SwapMarginAccounts (Value fixedMargin) (Value floatingMargin))
+            if signedFixed && totalValOut == fixedMargin + floatingMargin
+            then Ongoing 
+                    (SwapOwners fx' fl) 
+                    (SwapMarginAccounts (Value fixedMargin) (Value floatingMargin))
 
-                else $$(PlutusTx.traceH) "ChangeOwnerFixedLeg invalid" (PlutusTx.error ())
+            else $$(PlutusTx.traceH) "ChangeOwnerFixedLeg invalid" (PlutusTx.error ())
                 
         ChangeOwnerFloatingLeg fl' -> 
             -- to change the owner of the floating leg of the 
             -- swap, 
             -- 1. the txn needs to be signed by the current owner
             -- 2. the new owner should be reflected in the new state
-            let 
-                signedByOwner = $$(TH.txSignedBy) p fl
-            in
-                if signedByOwner && totalValOut == fixedMargin + floatingMargin
-                then Ongoing 
-                        (SwapOwners fx fl') 
-                        (SwapMarginAccounts (Value fixedMargin) (Value floatingMargin))
+            if signedFloating && totalValOut == fixedMargin + floatingMargin
+            then Ongoing 
+                    (SwapOwners fx fl') 
+                    (SwapMarginAccounts (Value fixedMargin) (Value floatingMargin))
 
-                else $$(PlutusTx.traceH) "ChangeOwnerFloatingLeg invalid" (PlutusTx.error ())
+            else $$(PlutusTx.traceH) "ChangeOwnerFloatingLeg invalid" (PlutusTx.error ())
                 
     ||]
 
